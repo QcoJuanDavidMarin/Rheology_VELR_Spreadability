@@ -1,0 +1,353 @@
+---
+title: "VELR_Spreadability"
+author: ""
+date: "2025-08-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  comment = ""
+)
+```
+
+
+**donwload the data** [https://data.mendeley.com/datasets/ntgfb38k69/3]
+
+# **1- Flow Curve**
+
+Variables in the DataFrame:
+
+Shear rate (how fast the material deforms).
+Shear stress (measured force per unit area).
+Viscosity (τ/γ̇, ratio of shear stress to shear rate).
+Torque (motor force generating the deformation).
+
+
+```{r}
+rutas_archivos <- list.files(path = ".", pattern = "flow_data.csv", recursive = TRUE, full.names = TRUE)
+
+lista_datos <- lapply(rutas_archivos, function(ruta){
+  read.csv(ruta, skip = 1)
+})
+
+names(lista_datos) <- basename(dirname(rutas_archivos))
+```
+
+
+This code is gonna split the viscosity data like this:
+
+Low shear viscosity: between 0.1–1 s⁻¹
+Medium shear viscosity: between 10–100 s⁻¹
+High shear viscosity: between 500–1000 s⁻¹
+
+The idea is that when you put cream on your skin with your hand, the shear rates are usually in these ranges:
+
+Slow moves: like 0.1–1 s⁻¹ (when you move the cream super slow on your skin).
+Normal moves: like 10–100 s⁻¹ (when you rub it normally).
+Fast/strong moves: more than 100 s⁻¹ (when you rub really fast or hard).
+
+```{r}
+names(lista_datos) <- basename(dirname(rutas_archivos))
+library(dplyr)
+
+for (i in 1:length(lista_datos)) {
+  lista_datos[[i]] <- lista_datos[[i]] %>%
+    mutate(
+      conc = names(lista_datos[i]),  # Añade el nombre del elemento i como columna 'conc'
+      range_viscosity = case_when(
+        shear.rate..1.s. <= 10 ~ "Low_shear",
+        shear.rate..1.s. > 10 & shear.rate..1.s. <= 100 ~ "Medium_shear",
+        shear.rate..1.s. > 100 ~ "High_shear"
+      ) 
+    )  
+}
+
+flow_data <- do.call(rbind, lista_datos) %>% 
+    dplyr::rename(shear.rate = shear.rate..1.s., shear.stress = shear.stress..Pa., 
+           viscosity = viscosity..Pa.s., Torque = Torque..μN.m.)
+#flow_data
+
+```
+
+
+In these parts of the code, we calculate the slope of log(viscosity) vs. log(shear rate). This shows how much the viscosity goes down when the shear rate increases. it is call thinning index.
+If n < 1, it means the material gets thinner when you move it faster.
+
+```{r}
+library(plotly)
+flow_data_p <- flow_data %>% 
+  group_by(conc) %>% 
+  ggplot(aes(x = log(shear.rate), y = log(viscosity), colour = conc)) +
+  geom_line() +
+  labs(
+    title = "Curva de Flujo",
+    x = "Log(Tasa de Cizalla)",
+    y = "Log(Viscosidad)"
+  ) + 
+  theme_classic()
+
+ggplotly(flow_data_p)
+```
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(broom)
+# ajustes de los modelos lineales
+flow_data %>%
+  group_by(conc) %>%
+  dplyr::do(glance(lm(log(viscosity) ~ log(shear.rate), data = .)))
+```
+
+
+
+Shear-thinning: the viscosity goes down when the speed is increased
+
+```{r}
+# pendientes Shear-thinning index (n) (n−1).Eso te da el índice de adelgazamiento.
+library(janitor)
+Shear_thinning <- flow_data %>%
+  group_by(conc) %>%
+  dplyr::do(broom::tidy(lm(log(viscosity) ~ log(shear.rate), data = .))) %>% 
+  select(conc,term, estimate, estimate) %>% 
+  tidyr::pivot_wider(names_from = 'term', values_from = 'estimate', names_prefix = '') %>% 
+  rename_with(~ make.names(.), .cols = everything()) %>%  # removing parentheses
+  dplyr::rename(intercept = X.Intercept., Shear_thinning = log.shear.rate.) %>% 
+  select(-intercept)
+
+Shear_thinning
+```
+
+If the slope (n) is around 0.5, the material is shear-thinning. That means its viscosity drops fast when you increase the shear rate. It feels thick at first, but as soon as you rub it, it gets really thin.
+This matches what we see with the viscosity: high viscosity at low shear rates, but low viscosity at high shear rates.
+
+
+The next code calculates the average viscosity for each shear rate group: low, medium, and high.
+
+```{r}
+viscosity_range <- flow_data %>% 
+  group_by(conc, range_viscosity) %>% 
+  summarise(avg_viscosity = mean(viscosity), .groups = 'drop') %>% 
+  pivot_wider(names_from = 'range_viscosity', values_from = 'avg_viscosity', names_prefix = 'avgVisc_') %>% 
+  select(conc, avgVisc_Low_shear, avgVisc_Medium_shear, everything())
+
+
+viscosity_range %>%
+  pivot_longer(
+    cols = starts_with("avgVisc_"),
+    names_to = "shear_type",
+    values_to = "avg_viscosity"
+  ) %>%
+  mutate(
+    shear_type = factor(shear_type, levels = c("avgVisc_Low_shear", "avgVisc_Medium_shear", "avgVisc_High_shear"))
+  ) %>%
+  ggplot(aes(x = conc, y = avg_viscosity, fill = shear_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Viscosidad Promedio por Tipo de Cizalla",
+    x = "Muestra",
+    y = "Viscosidad Promedio",
+    fill = "Tipo de Cizalla"
+  ) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 7)) 
+  
+
+viscosity_range 
+```
+Low shear: High viscosity—could be a thick or heavy cream.
+Medium shear: Viscosity drops a lot between low and medium shear, so the cream probably feels lighter when you rub it.
+High shear: Viscosity is very low here—the cream gets thin and spreads easily.
+
+The code then combines the average viscosity data and the thinning index.
+
+```{r}
+flow_curve <- inner_join(x = viscosity_range, y = Shear_thinning, by = "conc")
+flow_curve
+```
+
+Low shear = first impression.
+Medium shear = normal experience.
+High shear = extreme behavior.
+Slope = how much it changes between these situations.
+
+# **2. ampl_sweeps.csv**
+
+
+Variables in the DataFrame:
+
+strain [%]: how much it’s stretched/deformed.
+shear stress [Pa]: the force measured.
+storage modulus [Pa] (G′): elastic part (stores energy, solid-like).
+loss modulus [Pa] (G″): viscous part (loses energy, liquid-like).
+
+amplitude sweep data.
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+rutas_archivos_ampl_sweeps <- list.files(path = ".", pattern = "ampl_sweeps.csv", recursive = TRUE, full.names = TRUE)
+lista_datos_ampl_sweeps <- lapply(rutas_archivos_ampl_sweeps, function(ruta){
+  read.csv(ruta, skip = 1, sep = c(',',";"))
+})
+names(lista_datos_ampl_sweeps) <- basename(dirname(rutas_archivos_ampl_sweeps))
+
+for(i in 1:length(lista_datos_ampl_sweeps)){
+  lista_datos_ampl_sweeps[[i]] <- lista_datos_ampl_sweeps[[i]] %>% 
+    mutate(
+      conc = as.factor(names(lista_datos_ampl_sweeps[i]))
+    )
+}
+
+ampl_sweeps_df <- do.call(rbind, lista_datos_ampl_sweeps) %>% 
+  dplyr::rename(strain= strain...., shear.stress = shear.stress..Pa., 
+                storage.modulus = storage.modulus..Pa., loss.modulus = loss.modulus..Pa.) 
+
+#ampl_sweeps_df
+```
+
+This is a general graph of the amplitude sweeps for all 13 samples, showing the loss modulus (G″) and storage modulus (G′).
+
+```{r}
+library(plotly)
+ampl_sweeps_g <- ampl_sweeps_df %>%
+  group_by(conc) %>% 
+  #dplyr::filter(conc == "NaCl_0.5_XG") %>%
+  slice(c(8:n())) %>% 
+  tidyr::pivot_longer(
+    cols = c(storage.modulus, loss.modulus),
+    names_to = "modulus_type",
+    values_to = "modulus_value"
+  ) %>% 
+    ggplot(aes(x=strain, y = modulus_value, colour = modulus_type)) +
+  geom_line(
+    aes(color= conc, linetype = modulus_type)
+  ) +
+  theme_classic() 
+ggplotly(ampl_sweeps_g)
+```
+
+
+This shows the linear viscoelastic regions (LVR) of the samples.
+There’s no clear LVR region in the data.
+
+```{r}
+
+library(ggmagnify)
+library(ggplot2)
+from <- c(xmin = 5, xmax = 45, ymin = 0.15, ymax = 0.25)
+to <- c(500, 1500 , 0.15, 0.35)
+ampl_sweeps_df %>% 
+  filter(conc == 'NaCl_0.1_XG') %>% 
+  pivot_longer(cols = c(storage.modulus, loss.modulus),
+               names_to = 'modulus_type',
+               values_to = 'modulus_value') %>% 
+  ggplot(aes(x=strain, y = modulus_value, colour = modulus_type,  label = modulus_type)) +
+  geom_line() +
+  theme_classic() +
+   ggmagnify::geom_magnify(from = from, 
+                           to = to,axes = "xy",
+                           proj = "facing",colour = "black", 
+                           linetype = 1, proj.fill = alpha("yellow", 0.1))
+```
+
+G′ and G″ in the linear zone show the initial texture: firmness vs. flow.
+Using the average G′ and G″ in the LVR zone (even though there’s no clear LVR).
+
+
+Even if there’s no obvious LVR, zooming into the first data points shows a short linear region.
+
+```{r}
+# VELR PLOTS
+ampl_sweeps_df %>% 
+  group_by(conc) %>% 
+  mutate(
+    diff_loss =abs(loss.modulus-lag(loss.modulus)) # se resta el valor loss.modulus con su anterior para obtener residuo
+  ) %>% 
+  dplyr::filter(
+    diff_loss <= 0.015, # se filtran residuos menores a 0.015, para obtener los puntos mas cercanos
+    loss.modulus >= mean(.$loss.modulus[.$diff_loss < 0.015], na.rm = T) # se siltran los valores de loss.modulus mayor a su media
+    ) %>% 
+  select(-diff_loss) %>%  
+  pivot_longer(
+    cols = c(storage.modulus, loss.modulus),
+    names_to = "modulus_type",
+    values_to = "modulus_value"
+  ) %>% 
+  ggplot(aes(x=strain, y = modulus_value, colour = modulus_type)) +
+  geom_line(
+    aes(color= conc, linetype = modulus_type)
+  ) +
+  theme_classic() 
+
+```
+
+G′/G″ (tan δ)
+More elastic or more liquid at the start.
+tan δ < 1 → elastic material (firm gel).
+tan δ > 1 → viscous material (fluid).
+
+```{r}
+mean_modulsdf <- ampl_sweeps_df %>% 
+  group_by(conc) %>% 
+  mutate(
+    diff_loss =abs(loss.modulus-lag(loss.modulus)) # se resta el valor loss.modulus con su anterior para obtener residuo
+  ) %>% 
+  dplyr::filter(
+    diff_loss <= 0.015, # se filtran residuos menores a 0.015, para obtener los puntos mas cercanos
+    loss.modulus >= mean(loss.modulus[diff_loss < 0.015], na.rm = T)# se siltran los valores de loss.modulus mayor a su media
+    ) %>% 
+  select(-diff_loss) %>%  
+  pivot_longer(
+    cols = c(storage.modulus, loss.modulus),
+    names_to = "modulus_type",
+    values_to = "modulus_value"
+  ) %>% 
+  group_by(modulus_type,conc) %>% 
+  summarise(mean_modul = mean(modulus_value),.groups= 'drop') %>% 
+  pivot_wider(names_from = modulus_type, values_from = mean_modul) %>% 
+  mutate(tangent_delta = loss.modulus/storage.modulus) %>% 
+  rename(avg_loss.modulus = loss.modulus, avg_storage.modulus = storage.modulus)
+mean_modulsdf
+```
+
+
+Yield strain (γ_yield)
+The point where G′ drops 10–20% from its LVR value shows how much deformation it can handle before breaking.
+This gives the yield shear stress (τ_yield)—the force needed to break the internal structure.
+
+
+γ_yield and τ_yield are calculated based on the 20% drop in G′ after the LVR.
+
+```{r}
+# Vector con los valores de Gprime_threshold
+Gprime_threshold <- mean_modulsdf$avg_storage.modulus * 0.8 # para calcular el 20 % de decaimineto del loss module
+
+thresholds <- setNames(object = Gprime_threshold, nm = levels(ampl_sweeps_df$conc))
+
+y_strain_stress <- ampl_sweeps_df %>% 
+  group_by(conc) %>% 
+  dplyr::filter(storage.modulus >= thresholds[as.character(first(conc))]) %>% 
+  slice_tail(n = 1) %>% 
+  ungroup() %>% 
+  rename(yield_strain = strain, yield_stress = shear.stress) %>% 
+  select(-storage.modulus,-loss.modulus)
+
+y_strain_stress
+```
+
+
+Dinal Dataframe 
+
+```{r}
+ampl_sweep <- inner_join(x = mean_modulsdf, y = y_strain_stress, by = 'conc')
+ampl_sweep
+
+```
+
